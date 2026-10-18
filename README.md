@@ -1,11 +1,11 @@
 # Traffic Light Costume
 
-A wearable traffic-light costume for a child, driven by an **ESP32** and three
-independently-controlled **WS2812B LED rings** (red / yellow / green).
+A wearable traffic-light costume for a child, driven by an **ESP32** and one
+daisy-chained **WS2812B LED strip** divided into bottom, middle, and top sections.
 
-The firmware boots into a **startup self-test** (lights each ring in turn so a
-mis-wired ring is obvious), then runs a **non-blocking** US-style traffic
-sequence: `GREEN -> YELLOW -> RED -> GREEN ...`.
+The firmware exposes a text-based BLE GATT interface for **LightBlue by Punch
+Through**, physical buttons, and Wi-Fi OTA. It runs independently of the phone
+after a BLE disconnect.
 
 > **Status: firmware baseline, NOT hardware-validated.** This code compiles
 > cleanly with PlatformIO but has not been flashed or tested against physical
@@ -16,12 +16,11 @@ sequence: `GREEN -> YELLOW -> RED -> GREEN ...`.
 
 ## Features
 
-- Three WS2812B rings driven independently via FastLED (one data pin each).
-- Centralized configuration — every pin, LED count, brightness, and timing value
-  lives in `src/config.h`, not scattered through the code.
-- Non-blocking sequence (millis()-based state machine; no `delay()`).
-- Startup self-test to catch wiring mistakes before the show.
-- Conservative brightness cap (eye-safe for a child, current-safe for batteries).
+- Three 29-LED WS2812B sections driven as one 87-LED daisy chain.
+- Open BLE GATT controls with plain-text mode/effect/brightness values and state notifications.
+- Optional mode/action buttons and an effect showcase sequence.
+- Non-blocking animation loop with a global 1,500 mA FastLED power limiter.
+- Optional password-protected Wi-Fi OTA; disabled until local credentials are configured.
 
 ## Repository layout
 
@@ -39,39 +38,41 @@ traffic-light-costume/
 
 Everything tunable is in [`src/config.h`](src/config.h):
 
-| Setting            | Default            | Meaning                                   |
-|--------------------|--------------------|-------------------------------------------|
-| `PIN_RED`          | `16`               | Data pin for the red ring                 |
-| `PIN_YELLOW`       | `17`               | Data pin for the yellow ring              |
-| `PIN_GREEN`        | `18`               | Data pin for the green ring               |
-| `LED_COUNT_RED`    | `8`                | LEDs in the red ring                      |
-| `LED_COUNT_YELLOW` | `8`                | LEDs in the yellow ring                   |
-| `LED_COUNT_GREEN`  | `8`                | LEDs in the green ring                    |
-| `BRIGHTNESS_MASTER`| `80`               | Master brightness, 0–255 (~31%)           |
-| `TIMING_GREEN_MS`  | `5000`             | Green phase duration                      |
-| `TIMING_YELLOW_MS` | `2000`             | Yellow phase duration                     |
-| `TIMING_RED_MS`    | `5000`             | Red phase duration                        |
-| `SELFTEST_STEP_MS` | `600`              | Per-ring self-test dwell                  |
+| Setting | Default | Meaning |
+|---|---:|---|
+| `PIN_LED_DATA` | `16` | Data pin for the full LED chain |
+| `PIN_MODE_BUTTON` | `18` | Optional mode button to ground |
+| `PIN_ACTION_BUTTON` | `19` | Optional action button to ground |
+| `LED_COUNT_PER_SECTION` | `29` | LEDs per section |
+| `LED_CURRENT_BUDGET_MA` | `1500` | Global FastLED current limit |
+| `DEFAULT_BRIGHTNESS_PERCENT` | `31` | Startup brightness, 0-100 |
+| Section order | bottom, middle, top | Physical order from the ESP32 data input |
+
+See [docs/BLE_PROTOCOL.md](docs/BLE_PROTOCOL.md) for the exact GATT UUIDs,
+LightBlue workflow, values, feedback format, and access-control limitations.
 
 ---
 
 ## Wiring assumptions (UNVERIFIED — confirm before soldering)
 
-Each WS2812B ring needs three connections: **5V**, **GND**, and **DATA IN**
-(the data-out pad is for daisy-chaining and is left unconnected here).
+The full WS2812B chain needs **5V**, **GND**, and one **DATA IN** connection.
+Connect the ESP32 data pin to the bottom section's input, then connect each
+section's data output to the next section's input in this order: bottom, middle,
+top. The data output of the top section is left unconnected.
 
-| Ring   | ESP32 pin (default) | Notes                                          |
-|--------|---------------------|------------------------------------------------|
-| Red    | GPIO16              | Output-capable, no boot-strapping              |
-| Yellow | GPIO17              | Output-capable, no boot-strapping              |
-| Green  | GPIO18              | Output-capable, no boot-strapping              |
+| Section | LED indexes | Signal color | Notes |
+|---------|-------------|--------------|-------|
+| Bottom  | 0-28        | Green        | First section connected to ESP32 data |
+| Middle  | 29-57       | Yellow       | Chained after bottom |
+| Top     | 58-86       | Red          | Chained after middle |
 
-The default pins deliberately avoid ESP32 strapping pins (GPIO 0, 2, 5, 12, 15),
+The default LED data pin avoids ESP32 strapping pins (GPIO 0, 2, 5, 12, 15),
 the flash pins (GPIO 6–11), input-only pins (GPIO 34–39), and the UART0 console
-(GPIO 1, 3). Most ESP32 DevKit / NodeMCU-32S boards expose all three chosen pins
-on the header. If your board routes a different set, change `src/config.h`.
+(GPIO 1, 3). GPIO18 and GPIO19 are configured as optional buttons with internal
+pull-ups; each switch connects the pin to ground. If your board routes a
+different set, change `src/config.h`.
 
-**Recommended wiring order per ring:**
+**Recommended LED wiring:**
 1. Common **GND** between the ESP32, the LED ring, and the power source.
 2. **5V** to the ring's power pad.
 3. **DATA IN** to the ESP32 GPIO through a ~330 Ω series resistor (protects the
@@ -81,14 +82,14 @@ on the header. If your board routes a different set, change `src/config.h`.
 
 ## Power budget (assumptions, not measurements)
 
-WS2812B can draw up to **~60 mA per LED** at full white. With the defaults
-(3 × 8 = 24 LEDs, brightness capped at 80/255 ≈ 31%) the worst case is roughly
-`24 × 60 mA × 0.31 ≈ 450 mA`, well within a USB power bank (≥1 A) or a single
-18650 cell via a buck/boost module.
+The firmware sets FastLED's global estimated output ceiling to **1,500 mA**.
+This is a software limiter, not hardware overcurrent protection, and actual
+WS2812B current varies by pixel batch, color, voltage, and temperature. Use a
+regulated 5 V supply sized with suitable headroom and wiring; validate current
+with a meter before wearing the costume.
 
-If you raise `LED_COUNT_*` or `BRIGHTNESS_MASTER`, re-check the supply. At full
-brightness 24 LEDs would want ~1.4 A — do not run that from a bare LiPo without
-adequate cell protection and wiring gauge.
+Changing the LED count, supply voltage, or power limit requires a new current
+check. The limiter cannot protect against wiring faults or a supply short.
 
 **Do not power the rings from the ESP32's 3.3 V rail.** WS2812B data is 3.3 V
 tolerant (ESP32 drives it directly), but the LEDs' *power* should come from 5 V,
@@ -108,13 +109,30 @@ shared with the ESP32's 5 V input (or a separate 5 V rail with common ground).
 ## Build & upload
 
 ```bash
-git clone https://github.com/ams3cf/traffic-light-costume.git
-cd traffic-light-costume
-
-pio run              # compile (first run downloads the ESP32 toolchain + FastLED)
-pio run -t upload    # flash over USB (edit upload_port if auto-detect fails)
-pio device monitor   # open serial monitor (115200 baud) to see boot logs
+pio run -e bench
+pio run -e production
+pio run -e production -t upload    # flash over USB
+pio device monitor                 # serial monitor (115200 baud)
 ```
+
+The `bench` and `production` profiles target the same ESP32 board. Production
+silences serial debug output. NimBLE-Arduino provides BLE; no iOS application
+is included or needed.
+
+### Optional Wi-Fi OTA
+
+Create `src/secrets.h` locally (it is ignored by Git) with your Wi-Fi network and
+a unique OTA password:
+
+```cpp
+#define OTA_WIFI_SSID "your-network"
+#define OTA_WIFI_PASSWORD "your-wifi-password"
+#define OTA_PASSWORD "a-long-unique-ota-password"
+```
+
+Without all three settings, Wi-Fi is not started and the costume works offline.
+With settings present, the ESP32 joins that network and enables password-
+protected ArduinoOTA. This is **Wi-Fi OTA only**, not Bluetooth firmware update.
 
 If auto-upload picks the wrong port, set it explicitly in `platformio.ini`:
 
@@ -126,9 +144,10 @@ upload_port = /dev/ttyUSB0      # or COM3 on Windows, /dev/cu.usbserial-* on mac
 
 - [ ] Exact ESP32 board variant (defaults assume generic `esp32dev`).
 - [ ] Physical pinout / wiring (defaults are safe-but-assumed).
-- [ ] Actual LED counts per ring (defaults are 8 each).
-- [ ] Real current draw and power-supply headroom.
-- [ ] On-hardware behavior of the self-test and sequence.
+- [ ] Actual LED counts per section (configured as 29 each).
+- [ ] Measured current and physical operation of the 1,500 mA limiter.
+- [ ] BLE operation and the LightBlue test on a physical iPhone.
+- [ ] Optional buttons and Wi-Fi OTA on the target hardware.
 
 Do not treat the above as validated until you flash and observe the board.
 

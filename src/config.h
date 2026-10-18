@@ -14,11 +14,8 @@
 // GPIO pin assignments
 //
 // Defaults target a generic ESP32 DevKit / NodeMCU-32S module. Pins chosen to
-// be output-capable and free of boot-strapping behavior:
-//
-//   RED    = GPIO16
-//   YELLOW = GPIO17
-//   GREEN  = GPIO18
+// be output-capable and free of boot-strapping behavior. The full LED chain
+// uses one data output from the ESP32.
 //
 // AVOID for WS2812B data lines:
 //   - GPIO 6-11  : connected to the onboard SPI flash (unusable)
@@ -27,32 +24,48 @@
 //   - GPIO 34-39 : input-only (no output driver)
 //   - GPIO 1, 3  : UART0 TX/RX (serial console — usable, but noisy)
 // ---------------------------------------------------------------------------
-#define PIN_RED    16
-#define PIN_YELLOW 17
-#define PIN_GREEN  18
+#define PIN_LED_DATA 16
+#define PIN_MODE_BUTTON 18
+#define PIN_ACTION_BUTTON 19
 
 // ---------------------------------------------------------------------------
-// LED counts per ring
+// Daisy-chained LED sections
 //
-// WS2812B rings commonly ship in 8 / 12 / 16 / 24 / 60 LED variants.
-// Default 8 per ring is a conservative starting point. Update to match the
-// rings you actually bought — the firmware allocates one CRGB (3 bytes) per
-// LED, so ESP32 SRAM is never a constraint here.
+// The chain starts at the bottom section, then continues through the middle
+// and top sections. Each section contains 29 LEDs.
 // ---------------------------------------------------------------------------
-#define LED_COUNT_RED    8
-#define LED_COUNT_YELLOW 8
-#define LED_COUNT_GREEN  8
+#define LED_COUNT_PER_SECTION 29
+#define LED_COUNT_TOTAL       (LED_COUNT_PER_SECTION * 3)
+#define LED_OFFSET_BOTTOM    0
+#define LED_OFFSET_MIDDLE    (LED_OFFSET_BOTTOM + LED_COUNT_PER_SECTION)
+#define LED_OFFSET_TOP       (LED_OFFSET_MIDDLE + LED_COUNT_PER_SECTION)
 
 // ---------------------------------------------------------------------------
-// Brightness
-//
-// FastLED master brightness, 0-255. Capped conservatively for two reasons:
-//   1. A child's costume puts LEDs close to the eyes — full white is blinding.
-//   2. Limiting brightness caps total current draw, keeping the power design
-//      simple and safe (see README "Power budget" for the math).
-// 80 ≈ 31% of full scale.
+// LED safety and firmware identity
 // ---------------------------------------------------------------------------
-#define BRIGHTNESS_MASTER 80
+#define DEFAULT_BRIGHTNESS_PERCENT 31
+#define LED_CURRENT_BUDGET_MA 1500
+#define POWER_PROFILE_NAME "limit_1500mA"
+#define OPTICAL_PROFILE_NAME "diffused"
+#define LED_FRAME_INTERVAL_MS 25
+#define EFFECT_DURATION_MS 18000
+#define SHOWCASE_STEP_MS 3000
+#define BUTTON_DEBOUNCE_MS 35
+#define BUTTON_LONG_PRESS_MS 1000
+#define BLE_TEXT_MAX_LENGTH 23
+#define BLE_STATE_MAX_LENGTH 160
+#define BLE_DEVICE_INFO_MAX_LENGTH 64
+#define BLE_NEGOTIATED_MTU 185
+#define FIRMWARE_VERSION "1.0.0"
+#define BLE_PROTOCOL_VERSION "1"
+
+#define BLE_SERVICE_UUID       "9d4a0001-5f5b-4c1a-9f1a-7c2b6e8d0001"
+#define BLE_COMMAND_UUID       "9d4a0002-5f5b-4c1a-9f1a-7c2b6e8d0002"
+#define BLE_MODE_UUID          "9d4a0003-5f5b-4c1a-9f1a-7c2b6e8d0003"
+#define BLE_EFFECT_UUID        "9d4a0004-5f5b-4c1a-9f1a-7c2b6e8d0004"
+#define BLE_BRIGHTNESS_UUID    "9d4a0005-5f5b-4c1a-9f1a-7c2b6e8d0005"
+#define BLE_STATE_UUID         "9d4a0006-5f5b-4c1a-9f1a-7c2b6e8d0006"
+#define BLE_DEVICE_INFO_UUID   "9d4a0007-5f5b-4c1a-9f1a-7c2b6e8d0007"
 
 // ---------------------------------------------------------------------------
 // Traffic sequence timing (milliseconds)
@@ -64,11 +77,11 @@
 #define TIMING_RED_MS     5000
 
 // ---------------------------------------------------------------------------
-// Startup self-test (milliseconds per ring)
+// Startup self-test (milliseconds per section)
 //
-// On boot the firmware lights each ring in sequence so a wiring mistake is
+// On boot the firmware lights each section in sequence so a wiring mistake is
 // obvious before the traffic sequence starts. Reduce to ~150ms for a quick
-// blink-check, or bump up to inspect each ring closely.
+// blink-check, or bump up to inspect each section closely.
 // ---------------------------------------------------------------------------
 #define SELFTEST_STEP_MS 600
 
@@ -76,4 +89,6 @@
 // Serial debug
 // ---------------------------------------------------------------------------
 #define SERIAL_BAUD  115200
-#define SERIAL_DEBUG 1   // set to 0 to silence Serial output
+#ifndef SERIAL_DEBUG
+#define SERIAL_DEBUG 1
+#endif
