@@ -1,0 +1,19 @@
+# PlatformIO build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Compiled objects / firmware binaries (rebuilt by pio)
+*.elf
+*.hex
+*.bin
+*.map
