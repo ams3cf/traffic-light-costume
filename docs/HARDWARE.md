@@ -97,6 +97,38 @@ Free and output-capable for future use: GPIO4, 5\*, 13, 14, 17, 23, 25, 26,
 Keep the ESP32's USB supply and the LED supply separate; join their grounds
 only.
 
+### Running from a USB battery bank
+
+USB battery banks switch a port off when its draw stays below a threshold
+(often 50-100 mA) for a while, so a phone that finishes charging doesn't drain
+the bank. A wall adapter never does this, so the problem only shows up on
+battery.
+
+The ESP32's Wi-Fi modem sleep is on by default in station (home Wi-Fi) mode. It
+naps the radio between the router's beacons and drops the board to roughly
+30-60 mA average, under many banks' cutoff. The firmware therefore calls
+`WiFi.setSleep(false)` in station mode (`src/network.cpp`), which keeps the
+board near 100-130 mA. Hotspot mode can't modem-sleep, so it needs nothing.
+
+**Verified:** with modem sleep on, the ESP32 on the bank went dark and stayed
+dark after one to two minutes, two runs out of three. With the control page open
+(it polls every second) one run survived, probably because the polling kept the
+radio busy. With `WiFi.setSleep(false)` (fw 2.1.1) it ran 20 minutes without a
+shutdown. Ping round trips also dropped from about 720 ms average (2 s worst)
+to about 16 ms.
+
+If a bank still cuts out, check whether it has a low-current or "always on"
+mode (often a double-press or long-press of its button), or feed the ESP32's
+`VIN` from the LED 5 V line so the LED draw keeps that port awake. Don't use
+light sleep or deep sleep on battery without a fix like this.
+
+How to tell the cause apart:
+
+| Symptom | Likely cause |
+|---|---|
+| Screen goes dark and stays dark until replugged or the bank's button is pressed | Bank switched off for low current |
+| Board restarts by itself within a second (OLED and boot self-test rerun) | Brownout from the LED load sagging the supply |
+
 ### Bench testing the chain from USB
 
 For wiring checks, the 87 LEDs can run from the ESP32's USB supply (`VIN`)

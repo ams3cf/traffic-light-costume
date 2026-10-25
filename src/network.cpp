@@ -118,6 +118,9 @@ static bool startStation() {
     portEXIT_CRITICAL(&g_infoMux);
     setNotice("joining home Wi-Fi...", 0);
     WiFi.mode(WIFI_STA);
+    // Modem sleep drops the ESP32 to ~30-60 mA average, low enough that USB battery
+    // banks cut the port after a minute or two; it also adds 1-2 s of request latency.
+    WiFi.setSleep(false);
     WiFi.setHostname(OTA_HOSTNAME);
     WiFi.begin(HOME_WIFI_SSID, HOME_WIFI_PASSWORD);
     const uint32_t startedMs = millis();

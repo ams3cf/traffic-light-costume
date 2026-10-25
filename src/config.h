@@ -67,7 +67,7 @@
 // Hold MODE + GREEN this long to switch between hotspot and home Wi-Fi.
 #define BUTTON_CHORD_MS 3000
 #define COMMAND_QUEUE_LENGTH 8
-#define FIRMWARE_VERSION "2.1.0"
+#define FIRMWARE_VERSION "2.1.1"
 
 // ---------------------------------------------------------------------------
 // Wi-Fi access point and web UI
