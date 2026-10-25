@@ -4,7 +4,11 @@
 
 static constexpr uint8_t EFFECTS = 5;
 
-static LightState initial() { return {Mode::Auto, Color::Red, 0, true, 31}; }
+static LightState initial() { return {Mode::Auto, Color::Red, 0, true, 31, SPEED_NORMAL, SPEED_NORMAL}; }
+
+static bool button(LightState& state, ButtonId id, Gesture gesture) {
+    return applyCommand(state, buttonCommand(id, gesture), EFFECTS);
+}
 
 void setUp() {}
 void tearDown() {}
@@ -57,14 +61,93 @@ static void test_select_color_ignores_none_and_out_of_range() {
     TEST_ASSERT_EQUAL(Mode::Auto, state.mode);
 }
 
-static void test_next_mode_cycles_through_all_three() {
+static void test_mode_tap_cycles_through_all_three() {
     LightState state = initial();
-    applyCommand(state, {CommandType::NextMode, 0}, EFFECTS);
+    TEST_ASSERT_FALSE(button(state, ButtonId::Mode, Gesture::Press));
+    button(state, ButtonId::Mode, Gesture::Tap);
     TEST_ASSERT_EQUAL(Mode::Manual, state.mode);
-    applyCommand(state, {CommandType::NextMode, 0}, EFFECTS);
+    button(state, ButtonId::Mode, Gesture::Tap);
     TEST_ASSERT_EQUAL(Mode::Effects, state.mode);
-    applyCommand(state, {CommandType::NextMode, 0}, EFFECTS);
+    button(state, ButtonId::Mode, Gesture::Tap);
     TEST_ASSERT_EQUAL(Mode::Auto, state.mode);
+}
+
+static void test_mode_hold_returns_to_auto() {
+    LightState state = initial();
+    state.mode = Mode::Effects;
+    button(state, ButtonId::Mode, Gesture::Hold);
+    TEST_ASSERT_EQUAL(Mode::Auto, state.mode);
+}
+
+static void test_manual_color_press_selects_color() {
+    LightState state = initial();
+    state.mode = Mode::Manual;
+    TEST_ASSERT_TRUE(button(state, ButtonId::Green, Gesture::Press));
+    TEST_ASSERT_EQUAL(Color::Green, state.manualColor);
+    TEST_ASSERT_FALSE(button(state, ButtonId::Red, Gesture::Tap));
+    TEST_ASSERT_FALSE(button(state, ButtonId::Red, Gesture::Hold));
+}
+
+static void test_auto_green_red_change_speed_and_stay_in_auto() {
+    LightState state = initial();
+    button(state, ButtonId::Green, Gesture::Press);
+    button(state, ButtonId::Green, Gesture::Hold);
+    TEST_ASSERT_EQUAL(Mode::Auto, state.mode);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL + 2, state.trafficSpeed);
+    TEST_ASSERT_FALSE(button(state, ButtonId::Green, Gesture::Tap));
+    button(state, ButtonId::Red, Gesture::Press);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL + 1, state.trafficSpeed);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL, state.effectSpeed);
+}
+
+static void test_auto_yellow_resets_speed() {
+    LightState state = initial();
+    state.trafficSpeed = 0;
+    button(state, ButtonId::Yellow, Gesture::Press);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL, state.trafficSpeed);
+    TEST_ASSERT_EQUAL(Mode::Auto, state.mode);
+}
+
+static void test_speed_clamps_at_limits() {
+    LightState state = initial();
+    for (int i = 0; i < 20; ++i) button(state, ButtonId::Green, Gesture::Hold);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_LEVELS - 1, state.trafficSpeed);
+    for (int i = 0; i < 20; ++i) button(state, ButtonId::Red, Gesture::Hold);
+    TEST_ASSERT_EQUAL_UINT8(0, state.trafficSpeed);
+}
+
+static void test_effects_taps_step_and_wrap() {
+    LightState state = initial();
+    state.mode = Mode::Effects;
+    TEST_ASSERT_FALSE(button(state, ButtonId::Green, Gesture::Press));
+    button(state, ButtonId::Green, Gesture::Tap);
+    TEST_ASSERT_EQUAL_UINT8(1, state.effectIndex);
+    button(state, ButtonId::Red, Gesture::Tap);
+    button(state, ButtonId::Red, Gesture::Tap);
+    TEST_ASSERT_EQUAL_UINT8(EFFECTS - 1, state.effectIndex);
+    TEST_ASSERT_EQUAL(Mode::Effects, state.mode);
+    TEST_ASSERT_TRUE(state.cycleEffects);
+}
+
+static void test_effects_holds_change_effect_speed() {
+    LightState state = initial();
+    state.mode = Mode::Effects;
+    button(state, ButtonId::Green, Gesture::Hold);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL + 1, state.effectSpeed);
+    TEST_ASSERT_EQUAL_UINT8(0, state.effectIndex);
+    button(state, ButtonId::Red, Gesture::Hold);
+    button(state, ButtonId::Red, Gesture::Hold);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL - 1, state.effectSpeed);
+    button(state, ButtonId::Yellow, Gesture::Press);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL, state.effectSpeed);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL, state.trafficSpeed);
+}
+
+static void test_speed_percent_table() {
+    TEST_ASSERT_EQUAL_UINT16(100, speedPercent(SPEED_NORMAL));
+    TEST_ASSERT_TRUE(speedPercent(0) < 100);
+    TEST_ASSERT_TRUE(speedPercent(SPEED_LEVELS - 1) > 100);
+    TEST_ASSERT_EQUAL_UINT16(100, speedPercent(200));
 }
 
 static void test_manual_mode_keeps_last_color() {
@@ -118,7 +201,15 @@ int main() {
     RUN_TEST(test_select_color_enters_manual);
     RUN_TEST(test_repeat_color_press_is_no_change);
     RUN_TEST(test_select_color_ignores_none_and_out_of_range);
-    RUN_TEST(test_next_mode_cycles_through_all_three);
+    RUN_TEST(test_mode_tap_cycles_through_all_three);
+    RUN_TEST(test_mode_hold_returns_to_auto);
+    RUN_TEST(test_manual_color_press_selects_color);
+    RUN_TEST(test_auto_green_red_change_speed_and_stay_in_auto);
+    RUN_TEST(test_auto_yellow_resets_speed);
+    RUN_TEST(test_speed_clamps_at_limits);
+    RUN_TEST(test_effects_taps_step_and_wrap);
+    RUN_TEST(test_effects_holds_change_effect_speed);
+    RUN_TEST(test_speed_percent_table);
     RUN_TEST(test_manual_mode_keeps_last_color);
     RUN_TEST(test_set_mode_rejects_out_of_range);
     RUN_TEST(test_set_effect_holds_chosen_effect);

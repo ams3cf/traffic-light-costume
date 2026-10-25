@@ -2,51 +2,51 @@
 
 #include "config.h"
 #include "control.h"
+#include "gestures.h"
+#include "network.h"
 
-struct Button {
-    uint8_t pin;
-    Command press;
-    bool hasLongPress;
-    Command longPress;
-    bool stableHigh;
-    bool rawHigh;
-    bool longPressSent;
-    uint32_t lastChangeMs;
-    uint32_t pressedAtMs;
-};
+// Indexed by ButtonId.
+static const uint8_t BUTTON_PINS[BUTTON_COUNT] = {PIN_MODE_BUTTON, PIN_RED_BUTTON, PIN_YELLOW_BUTTON, PIN_GREEN_BUTTON};
+static const char* const BUTTON_NAMES[BUTTON_COUNT] = {"mode", "red", "yellow", "green"};
+static const char* const GESTURE_NAMES[] = {"press", "tap", "hold"};
 
-static Button g_buttons[] = {
-    {PIN_MODE_BUTTON, {CommandType::NextMode, 0}, true, {CommandType::SetMode, (uint8_t)Mode::Auto}, true, true, false, 0, 0},
-    {PIN_RED_BUTTON, {CommandType::SelectColor, (uint8_t)Color::Red}, false, {}, true, true, false, 0, 0},
-    {PIN_YELLOW_BUTTON, {CommandType::SelectColor, (uint8_t)Color::Yellow}, false, {}, true, true, false, 0, 0},
-    {PIN_GREEN_BUTTON, {CommandType::SelectColor, (uint8_t)Color::Green}, false, {}, true, true, false, 0, 0},
-};
+static ButtonGestures g_gestures({BUTTON_DEBOUNCE_MS, BUTTON_LONG_PRESS_MS, BUTTON_REPEAT_MS, BUTTON_CHORD_MS});
 
-void buttonsBegin() {
-    for (const Button& button : g_buttons) pinMode(button.pin, INPUT_PULLUP);
+static uint8_t readPressedMask() {
+    uint8_t mask = 0;
+    for (uint8_t i = 0; i < BUTTON_COUNT; ++i) {
+        if (digitalRead(BUTTON_PINS[i]) == BUTTON_PRESSED_LEVEL) mask |= (uint8_t)(1 << i);
+    }
+    return mask;
 }
 
-// Buttons with a long press act on release so a hold does not also fire the short action;
-// the others act on the press edge for immediate feedback.
-static void pollButton(Button& button, uint32_t now) {
-    const bool rawHigh = digitalRead(button.pin) == HIGH;
-    if (rawHigh != button.rawHigh) { button.rawHigh = rawHigh; button.lastChangeMs = now; }
-    if (rawHigh != button.stableHigh && now - button.lastChangeMs >= BUTTON_DEBOUNCE_MS) {
-        button.stableHigh = rawHigh;
-        if (!rawHigh) {
-            button.pressedAtMs = now;
-            button.longPressSent = false;
-            if (!button.hasLongPress) controlSend(button.press);
-        } else if (button.hasLongPress && !button.longPressSent) {
-            controlSend(button.press);
-        }
+void buttonsBegin() {
+    for (const uint8_t pin : BUTTON_PINS) pinMode(pin, INPUT_PULLUP);
+    delay(5);  // Let the pull-ups charge open (pressed or unplugged) lines before sampling.
+    const uint8_t ignored = g_gestures.begin(readPressedMask());
+#if SERIAL_DEBUG
+    for (uint8_t i = 0; i < BUTTON_COUNT; ++i) {
+        if ((ignored >> i) & 1) Serial.printf("button %s reads pressed at boot; ignored until released (unplugged?)\n", BUTTON_NAMES[i]);
     }
-    if (button.hasLongPress && !button.stableHigh && !button.longPressSent && now - button.pressedAtMs >= BUTTON_LONG_PRESS_MS) {
-        button.longPressSent = true;
-        controlSend(button.longPress);
-    }
+#else
+    (void)ignored;
+#endif
+}
+
+static void handleChord(ButtonId button) {
+    if (button == ButtonId::Green) networkRequestToggle();
 }
 
 void buttonsPoll(uint32_t now) {
-    for (Button& button : g_buttons) pollButton(button, now);
+    ButtonEvent events[BUTTON_COUNT * 2 + 1];
+    const uint8_t count = g_gestures.update(readPressedMask(), now, events, sizeof(events) / sizeof(events[0]));
+    for (uint8_t i = 0; i < count; ++i) {
+        const ButtonEvent& event = events[i];
+#if SERIAL_DEBUG
+        Serial.printf("button %s %s\n", BUTTON_NAMES[(uint8_t)event.button],
+                      event.kind == ButtonEventKind::Chord ? "chord with mode" : GESTURE_NAMES[(uint8_t)event.gesture]);
+#endif
+        if (event.kind == ButtonEventKind::Chord) handleChord(event.button);
+        else controlSend(buttonCommand(event.button, event.gesture));
+    }
 }

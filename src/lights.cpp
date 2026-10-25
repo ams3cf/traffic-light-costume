@@ -6,16 +6,24 @@
 #include "config.h"
 #include "control.h"
 #include "effects.h"
+#include "settings.h"
 
 // Traffic phases run bottom to top: green, yellow, red.
 static const Color PHASE_COLORS[] = {Color::Green, Color::Yellow, Color::Red};
 static const uint32_t PHASE_DURATION_MS[] = {TIMING_GREEN_MS, TIMING_YELLOW_MS, TIMING_RED_MS};
 
 static CRGB g_leds[LED_COUNT_TOTAL];
-static LightState g_state = {Mode::Auto, Color::Red, 0, true, DEFAULT_BRIGHTNESS_PERCENT};
+static LightState g_state = {Mode::Auto, Color::Red, 0, true, DEFAULT_BRIGHTNESS_PERCENT, SPEED_NORMAL, SPEED_NORMAL};
 static uint8_t g_trafficPhase = 0;
 static uint32_t g_phaseStartedMs = 0;
 static uint32_t g_effectStartedMs = 0;
+// Effects run on their own clock, advanced in fixed frames at effectSpeed, so both
+// time-based and frame-based (fire, fades) effects speed up and slow down.
+static constexpr uint32_t EFFECT_FRAME_BUDGET = LED_FRAME_INTERVAL_MS * 100;
+static constexpr uint8_t EFFECT_MAX_FRAMES_PER_SHOW = 4;
+static uint32_t g_effectClockMs = 0;
+static uint32_t g_effectBudget = 0;  // Real ms x speed percent not yet rendered.
+static uint32_t g_lastEffectMs = 0;
 static uint32_t g_lastFrameMs = 0;
 static bool g_selfTestDone = false;
 
@@ -44,6 +52,8 @@ static void restartTimers(uint32_t now) {
     g_trafficPhase = 0;
     g_phaseStartedMs = now;
     g_effectStartedMs = now;
+    g_lastEffectMs = now;
+    g_effectBudget = EFFECT_FRAME_BUDGET;  // Render the first effect frame immediately.
     fill_solid(g_leds, LED_COUNT_TOTAL, CRGB::Black);
 }
 
@@ -54,18 +64,24 @@ static void handleCommand(const Command& command, uint32_t now) {
         restartTimers(now);
     }
     if (!applyCommand(g_state, command, EFFECT_COUNT)) return;
+    // Saved immediately so a low "safe current" brightness also applies to the next boot's
+    // self-test. Only the web slider changes brightness, once per release, so writes are rare.
+    if (g_state.brightnessPercent != before.brightnessPercent) settingsSet(SETTING_BRIGHTNESS, g_state.brightnessPercent);
     if (g_state.mode != before.mode || g_state.effectIndex != before.effectIndex ||
         g_state.cycleEffects != before.cycleEffects) {
         restartTimers(now);
     }
 #if SERIAL_DEBUG
-    Serial.printf("state mode=%s color=%s effect=%s brightness=%u\n", modeName(g_state.mode),
-                  colorName(g_state.manualColor), EFFECTS[g_state.effectIndex].name, g_state.brightnessPercent);
+    Serial.printf("state mode=%s color=%s effect=%s cycle=%d brightness=%u trafficSpeed=%u%% effectSpeed=%u%%\n",
+                  modeName(g_state.mode), colorName(g_state.manualColor), EFFECTS[g_state.effectIndex].name,
+                  g_state.cycleEffects, g_state.brightnessPercent, speedPercent(g_state.trafficSpeed),
+                  speedPercent(g_state.effectSpeed));
 #endif
 }
 
 static Color renderTraffic(uint32_t now) {
-    if (now - g_phaseStartedMs >= PHASE_DURATION_MS[g_trafficPhase]) {
+    const uint32_t duration = PHASE_DURATION_MS[g_trafficPhase] * 100 / speedPercent(g_state.trafficSpeed);
+    if (now - g_phaseStartedMs >= duration) {
         g_phaseStartedMs = now;
         g_trafficPhase = (uint8_t)((g_trafficPhase + 1) % 3);
     }
@@ -78,7 +94,15 @@ static void renderEffects(uint32_t now) {
         g_state.effectIndex = (uint8_t)((g_state.effectIndex + 1) % EFFECT_COUNT);
         restartTimers(now);
     }
-    EFFECTS[g_state.effectIndex].render(g_leds, now);
+    g_effectBudget += (now - g_lastEffectMs) * speedPercent(g_state.effectSpeed);
+    g_lastEffectMs = now;
+    for (uint8_t frames = 0; g_effectBudget >= EFFECT_FRAME_BUDGET && frames < EFFECT_MAX_FRAMES_PER_SHOW; ++frames) {
+        g_effectClockMs += LED_FRAME_INTERVAL_MS;
+        g_effectBudget -= EFFECT_FRAME_BUDGET;
+        EFFECTS[g_state.effectIndex].render(g_leds, g_effectClockMs);
+    }
+    // Drop any backlog (e.g. after a stall) rather than fast-forwarding through it.
+    if (g_effectBudget > EFFECT_FRAME_BUDGET) g_effectBudget = EFFECT_FRAME_BUDGET;
 }
 
 // Returns the chamber that is lit, for the status API.
@@ -108,6 +132,11 @@ static Color renderSelfTest(uint32_t now) {
 }
 
 void lightsBegin() {
+    const uint8_t brightness = settingsGet(SETTING_BRIGHTNESS, DEFAULT_BRIGHTNESS_PERCENT);
+    g_state.brightnessPercent = brightness <= 100 ? brightness : DEFAULT_BRIGHTNESS_PERCENT;
+#if SERIAL_DEBUG
+    Serial.printf("brightness %u%% (saved)\n", g_state.brightnessPercent);
+#endif
     buttonsBegin();
     FastLED.addLeds<WS2812B, PIN_LED_DATA, GRB>(g_leds, LED_COUNT_TOTAL);
     FastLED.setMaxPowerInVoltsAndMilliamps(5, LED_CURRENT_BUDGET_MA);

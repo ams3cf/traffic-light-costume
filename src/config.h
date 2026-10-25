@@ -30,6 +30,12 @@
 #define PIN_RED_BUTTON 19
 #define PIN_YELLOW_BUTTON 21
 #define PIN_GREEN_BUTTON 22
+// 0.91" SSD1306 128x32 OLED on I2C. Not the ESP32's default 21/22: those are buttons.
+#define PIN_OLED_SDA 32
+#define PIN_OLED_SCL 33
+// Buttons are normally-closed to a common ground with internal pull-ups: the
+// pin rests LOW and reads HIGH while pressed. Use LOW for normally-open buttons.
+#define BUTTON_PRESSED_LEVEL HIGH
 
 // ---------------------------------------------------------------------------
 // Daisy-chained LED sections
@@ -57,15 +63,19 @@
 #define EFFECT_STEP_MS 15000
 #define BUTTON_DEBOUNCE_MS 40
 #define BUTTON_LONG_PRESS_MS 1000
+#define BUTTON_REPEAT_MS 400
+// Hold MODE + GREEN this long to switch between hotspot and home Wi-Fi.
+#define BUTTON_CHORD_MS 3000
 #define COMMAND_QUEUE_LENGTH 8
-#define FIRMWARE_VERSION "2.0.0"
+#define FIRMWARE_VERSION "2.1.0"
 
 // ---------------------------------------------------------------------------
 // Wi-Fi access point and web UI
 //
-// The costume runs its own WPA2 network; join it and open http://192.168.4.1.
-// WPA2 requires a password of at least 8 characters. Override either value in
-// src/secrets.h (git-ignored) if you want something other than the defaults.
+// By default the costume runs its own WPA2 network (hotspot); join it and open
+// http://192.168.4.1. WPA2 requires a password of at least 8 characters.
+// Home Wi-Fi mode (for OTA updates) joins HOME_WIFI_SSID instead; see
+// src/secrets.example.h. Values in src/secrets.h (git-ignored) override these.
 // The lights run in loop() on core 1; the web server is pinned to core 0,
 // alongside the ESP32 Wi-Fi stack.
 // ---------------------------------------------------------------------------
@@ -78,10 +88,37 @@
 #ifndef WIFI_AP_PASSWORD
 #define WIFI_AP_PASSWORD "greenlight"
 #endif
+#ifndef HOME_WIFI_SSID
+#define HOME_WIFI_SSID ""
+#endif
+#ifndef HOME_WIFI_PASSWORD
+#define HOME_WIFI_PASSWORD ""
+#endif
 #define WIFI_AP_CHANNEL 6
 #define WIFI_AP_MAX_CLIENTS 4
 #define WEB_TASK_CORE 0
 #define WEB_TASK_STACK_BYTES 8192
+// Home Wi-Fi mode: hostname for mDNS (OTA_HOSTNAME.local) and OTA, and how long to
+// try joining before falling back to the hotspot for that boot.
+#define OTA_HOSTNAME "trafficlight"
+#define STATION_CONNECT_TIMEOUT_MS 15000
+#define NETWORK_NOTICE_MS 5000
+
+// ---------------------------------------------------------------------------
+// OLED status display (runs in its own task on WEB_TASK_CORE)
+//
+// Shows mode, speed, brightness, button hints, and how to join the Wi-Fi.
+// It dims after a period with no state change to limit OLED burn-in.
+// ---------------------------------------------------------------------------
+#define OLED_I2C_ADDRESS 0x3C
+#define OLED_I2C_CLOCK_HZ 400000
+#define DISPLAY_REFRESH_MS 200
+#define DISPLAY_PROBE_MS 2000
+#define DISPLAY_HINT_MS 3000
+#define DISPLAY_DIM_AFTER_MS 30000
+#define DISPLAY_CONTRAST_FULL 255
+#define DISPLAY_CONTRAST_DIM 8
+#define DISPLAY_TASK_STACK_BYTES 4096
 
 // ---------------------------------------------------------------------------
 // Traffic sequence timing (milliseconds)

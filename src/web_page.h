@@ -1,7 +1,8 @@
 // ============================================================================
 // The control page, served from flash. Deliberately tiny: no frameworks, no
-// external assets, one request to load, then a 1 s poll of /api/status so
-// changes made with the hardware buttons appear on every connected phone.
+// external assets, one request to load, then a 1 s poll of /api/status (and
+// an immediate one when the tab returns to the foreground) so changes made
+// with the hardware buttons appear on every connected phone.
 // ============================================================================
 #pragma once
 
@@ -25,9 +26,11 @@ select{padding:10px;border-radius:8px;font-size:16px}
 #now{display:block;margin-top:6px;color:#aaa;font-size:14px}
 input{width:100%;margin-top:8px}
 #net{min-height:20px;color:#f88;font-size:14px}
+#speed{min-height:20px;margin:0 0 8px;color:#aaa;font-size:14px}
 </style></head><body><main>
 <div class="light"><button class="lamp" id="red"></button><button class="lamp" id="yellow"></button><button class="lamp" id="green"></button></div>
 <div class="seg"><button id="auto">Auto</button><button id="manual">Manual</button><button id="effects">Effects</button></div>
+<p id="speed"></p>
 <div id="fx"><select id="effect"></select><span id="now"></span></div>
 <label>Brightness <span id="pct"></span>%<input id="bright" type="range" min="0" max="100"></label>
 <p id="net"></p>
@@ -42,7 +45,9 @@ names.forEach(function(n){sel.add(new Option(label(n),n))});
 });
 }
 function show(s){
-['red','yellow','green'].forEach(function(c){$(c).className=s.lit==c?'lamp on':'lamp'});
+// Lamps choose a color only in manual; elsewhere the hardware color buttons adjust speed.
+['red','yellow','green'].forEach(function(c){$(c).className=s.lit==c?'lamp on':'lamp';$(c).disabled=s.mode!='manual'});
+$('speed').textContent=s.mode=='auto'?'Cycle speed '+s.trafficSpeed/100+'\u00d7':s.mode=='effects'?'Animation speed '+s.effectSpeed/100+'\u00d7':'';
 ['auto','manual','effects'].forEach(function(m){$(m).className=s.mode==m?'on':''});
 $('fx').style.visibility=s.mode=='effects'?'visible':'hidden';
 var sel=$('effect');
@@ -65,5 +70,6 @@ fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlenc
 $('effect').onchange=function(){post('/api/effect','effect='+this.value);this.blur()};
 $('bright').oninput=function(){sliding=true;$('pct').textContent=this.value};
 $('bright').onchange=function(){sliding=false;post('/api/brightness','value='+this.value)};
+document.addEventListener('visibilitychange',function(){if(!document.hidden)poll()});
 poll();
 </script></body></html>)HTML";
