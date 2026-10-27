@@ -88,22 +88,34 @@ static void test_manual_color_press_selects_color() {
     TEST_ASSERT_FALSE(button(state, ButtonId::Red, Gesture::Hold));
 }
 
-static void test_auto_green_red_change_speed_and_stay_in_auto() {
+static void test_auto_holds_change_speed_and_stay_in_auto() {
     LightState state = initial();
-    button(state, ButtonId::Green, Gesture::Press);
+    TEST_ASSERT_FALSE(button(state, ButtonId::Green, Gesture::Press));
+    button(state, ButtonId::Green, Gesture::Hold);
     button(state, ButtonId::Green, Gesture::Hold);
     TEST_ASSERT_EQUAL(Mode::Auto, state.mode);
     TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL + 2, state.trafficSpeed);
-    TEST_ASSERT_FALSE(button(state, ButtonId::Green, Gesture::Tap));
-    button(state, ButtonId::Red, Gesture::Press);
+    TEST_ASSERT_FALSE(button(state, ButtonId::Red, Gesture::Press));
+    button(state, ButtonId::Red, Gesture::Hold);
     TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL + 1, state.trafficSpeed);
     TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL, state.effectSpeed);
+    TEST_ASSERT_EQUAL(Mode::Auto, state.mode);
 }
 
-static void test_auto_yellow_resets_speed() {
+static void test_auto_tap_lights_that_color() {
+    LightState state = initial();
+    state.manualColor = Color::Green;
+    TEST_ASSERT_TRUE(button(state, ButtonId::Red, Gesture::Tap));
+    TEST_ASSERT_EQUAL(Mode::Manual, state.mode);
+    TEST_ASSERT_EQUAL(Color::Red, state.manualColor);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL, state.trafficSpeed);
+}
+
+static void test_auto_yellow_hold_resets_speed() {
     LightState state = initial();
     state.trafficSpeed = 0;
-    button(state, ButtonId::Yellow, Gesture::Press);
+    TEST_ASSERT_FALSE(button(state, ButtonId::Yellow, Gesture::Press));
+    button(state, ButtonId::Yellow, Gesture::Hold);
     TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL, state.trafficSpeed);
     TEST_ASSERT_EQUAL(Mode::Auto, state.mode);
 }
@@ -193,6 +205,43 @@ static void test_brightness_rejects_over_100() {
     TEST_ASSERT_EQUAL_UINT8(80, state.brightnessPercent);
 }
 
+static void test_parse_rgb_accepts_hex_and_default() {
+    uint32_t rgb = 0;
+    TEST_ASSERT_TRUE(parseRgb("ff8000", rgb));
+    TEST_ASSERT_EQUAL_HEX32(0xFF8000, rgb);
+    TEST_ASSERT_TRUE(parseRgb("#00A0fF", rgb));
+    TEST_ASSERT_EQUAL_HEX32(0x00A0FF, rgb);
+    TEST_ASSERT_TRUE(parseRgb("default", rgb));
+    TEST_ASSERT_EQUAL_HEX32(EFFECT_COLOR_DEFAULT, rgb);
+    TEST_ASSERT_FALSE(parseRgb("", rgb));
+    TEST_ASSERT_FALSE(parseRgb("fff", rgb));
+    TEST_ASSERT_FALSE(parseRgb("ff80000", rgb));
+    TEST_ASSERT_FALSE(parseRgb("ff80zz", rgb));
+}
+
+static void test_effect_color_command_leaves_state_alone() {
+    LightState state = initial();
+    TEST_ASSERT_FALSE(applyCommand(state, {CommandType::SetEffectColor, 0, 0, 0x123456}, EFFECTS));
+}
+
+static void test_sanitize_keeps_valid_saved_state() {
+    LightState saved = {Mode::Effects, Color::Green, 4, false, 60, 1, 6};
+    const LightState expected = saved;
+    sanitizeState(saved, initial(), EFFECTS);
+    TEST_ASSERT_EQUAL_MEMORY(&expected, &saved, sizeof(saved));
+}
+
+static void test_sanitize_replaces_only_bad_fields() {
+    LightState saved = {(Mode)7, Color::None, EFFECTS, true, 101, SPEED_LEVELS, 2};
+    sanitizeState(saved, initial(), EFFECTS);
+    TEST_ASSERT_EQUAL(Mode::Auto, saved.mode);
+    TEST_ASSERT_EQUAL(Color::Red, saved.manualColor);
+    TEST_ASSERT_EQUAL_UINT8(0, saved.effectIndex);
+    TEST_ASSERT_EQUAL_UINT8(31, saved.brightnessPercent);
+    TEST_ASSERT_EQUAL_UINT8(SPEED_NORMAL, saved.trafficSpeed);
+    TEST_ASSERT_EQUAL_UINT8(2, saved.effectSpeed);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_parse_mode_accepts_names);
@@ -204,8 +253,9 @@ int main() {
     RUN_TEST(test_mode_tap_cycles_through_all_three);
     RUN_TEST(test_mode_hold_returns_to_auto);
     RUN_TEST(test_manual_color_press_selects_color);
-    RUN_TEST(test_auto_green_red_change_speed_and_stay_in_auto);
-    RUN_TEST(test_auto_yellow_resets_speed);
+    RUN_TEST(test_auto_holds_change_speed_and_stay_in_auto);
+    RUN_TEST(test_auto_tap_lights_that_color);
+    RUN_TEST(test_auto_yellow_hold_resets_speed);
     RUN_TEST(test_speed_clamps_at_limits);
     RUN_TEST(test_effects_taps_step_and_wrap);
     RUN_TEST(test_effects_holds_change_effect_speed);
@@ -216,5 +266,9 @@ int main() {
     RUN_TEST(test_set_effect_cycle_keeps_current_effect);
     RUN_TEST(test_set_effect_rejects_out_of_range);
     RUN_TEST(test_brightness_rejects_over_100);
+    RUN_TEST(test_parse_rgb_accepts_hex_and_default);
+    RUN_TEST(test_effect_color_command_leaves_state_alone);
+    RUN_TEST(test_sanitize_keeps_valid_saved_state);
+    RUN_TEST(test_sanitize_replaces_only_bad_fields);
     return UNITY_END();
 }

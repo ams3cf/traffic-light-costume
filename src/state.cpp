@@ -38,8 +38,37 @@ bool parseBrightness(const char* text, uint8_t& percent) {
     return true;
 }
 
+bool parseRgb(const char* text, uint32_t& rgb) {
+    if (strcmp(text, "default") == 0) { rgb = EFFECT_COLOR_DEFAULT; return true; }
+    if (text[0] == '#') ++text;
+    uint32_t parsed = 0;
+    uint8_t digits = 0;
+    for (; text[digits] != '\0'; ++digits) {
+        const char c = text[digits];
+        uint8_t nibble;
+        if (c >= '0' && c <= '9') nibble = (uint8_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') nibble = (uint8_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') nibble = (uint8_t)(c - 'A' + 10);
+        else return false;
+        if (digits >= 6) return false;
+        parsed = (parsed << 4) | nibble;
+    }
+    if (digits != 6) return false;
+    rgb = parsed;
+    return true;
+}
+
 Command buttonCommand(ButtonId button, Gesture gesture) {
-    return {CommandType::ButtonEvent, (uint8_t)(((uint8_t)button << 2) | (uint8_t)gesture)};
+    return {CommandType::ButtonEvent, (uint8_t)(((uint8_t)button << 2) | (uint8_t)gesture), 0, 0};
+}
+
+void sanitizeState(LightState& state, const LightState& fallback, uint8_t effectCount) {
+    if ((uint8_t)state.mode >= MODE_COUNT) state.mode = fallback.mode;
+    if (state.manualColor == Color::None || (uint8_t)state.manualColor >= COLOR_COUNT) state.manualColor = fallback.manualColor;
+    if (state.effectIndex >= effectCount) state.effectIndex = fallback.effectIndex < effectCount ? fallback.effectIndex : 0;
+    if (state.brightnessPercent > 100) state.brightnessPercent = fallback.brightnessPercent;
+    if (state.trafficSpeed >= SPEED_LEVELS) state.trafficSpeed = fallback.trafficSpeed;
+    if (state.effectSpeed >= SPEED_LEVELS) state.effectSpeed = fallback.effectSpeed;
 }
 
 static void selectColor(LightState& state, Color color) {
@@ -59,7 +88,9 @@ static void stepEffect(LightState& state, bool forward, uint8_t effectCount) {
 
 // The color buttons mean different things per mode:
 //   Manual:  press lights that chamber.
-//   Auto:    GREEN faster, RED slower (press, repeating while held), YELLOW normal speed.
+//   Auto:    tap lights that chamber (switching to Manual), as a wearer expects of a red
+//            button; speed needs a deliberate hold: GREEN faster, RED slower (repeating
+//            while held), YELLOW normal speed.
 //   Effects: GREEN tap next / hold faster, RED tap previous / hold slower, YELLOW normal speed.
 static void applyButton(LightState& state, ButtonId button, Gesture gesture, uint8_t effectCount) {
     if (button == ButtonId::Mode) {
@@ -74,11 +105,10 @@ static void applyButton(LightState& state, ButtonId button, Gesture gesture, uin
             if (gesture == Gesture::Press) selectColor(state, color);
             break;
         case Mode::Auto:
-            if (button == ButtonId::Yellow) {
-                if (gesture == Gesture::Press) state.trafficSpeed = SPEED_NORMAL;
-            } else if (gesture != Gesture::Tap) {
-                stepSpeed(state.trafficSpeed, up);
-            }
+            if (gesture == Gesture::Tap) selectColor(state, color);
+            else if (gesture != Gesture::Hold) break;
+            else if (button == ButtonId::Yellow) state.trafficSpeed = SPEED_NORMAL;
+            else stepSpeed(state.trafficSpeed, up);
             break;
         case Mode::Effects:
             if (button == ButtonId::Yellow) {
@@ -123,6 +153,8 @@ bool applyCommand(LightState& state, const Command& command, uint8_t effectCount
             }
             break;
         }
+        case CommandType::SetEffectColor:
+            break;
     }
     return memcmp(&before, &state, sizeof(state)) != 0;
 }

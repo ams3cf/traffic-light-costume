@@ -32,6 +32,11 @@ visible in the next `/api/status` response.
 | POST | `/api/brightness` | `value=0..100` | Set brightness percent (saved; survives restarts and OTA) |
 | GET | `/api/effects` | | Effect names, in playlist order (JSON array) |
 | POST | `/api/effect` | `effect=cycle\|<name>` | Switch to effects mode and hold that effect, or `cycle` through all |
+| POST | `/api/effect/color` | `effect=<name>&slot=<n>&color=<rrggbb\|default>` | Set one of an effect's colors (saved); `default` restores it. Does not change mode |
+| POST | `/api/network` | `mode=hotspot\|station\|off` | Switch network in place (saved); applied ~0.5 s after the reply, so this connection drops |
+| POST | `/api/settings` | `flip=0\|1` | Rotate the OLED text 180° (saved). Replies `200 {"saved":true}` |
+| GET | `/api/diag` | | Button diagnostics (see the README, "Button diagnostics") |
+| POST | `/api/diag/reset` | | Zero the button diagnostics |
 
 Errors return JSON `{"error":"<what to send instead>"}` with `400` for a bad
 value, `404` for an unknown path or wrong method, and `503` if the command
@@ -40,7 +45,7 @@ queue is full (retry).
 ## Status
 
 ```json
-{"mode":"auto","lit":"green","color":"red","effect":"fire","cycle":true,"brightness":31,"trafficSpeed":100,"effectSpeed":100,"network":"hotspot","fw":"2.0.0"}
+{"mode":"auto","lit":"green","color":"red","effect":"fire","cycle":true,"colors":["ff3200"],"brightness":31,"trafficSpeed":100,"effectSpeed":100,"network":"hotspot","homeWifi":true,"flip":false,"fw":"2.2.0"}
 ```
 
 | Field | Meaning |
@@ -50,10 +55,13 @@ queue is full (retry).
 | `color` | Color manual mode shows (kept while in other modes) |
 | `effect` | Current or next effects-mode effect |
 | `cycle` | `true` while rotating through all effects, `false` while holding one |
+| `colors` | The current effect's colors (`rrggbb`), one per slot; empty for effects without colors |
 | `brightness` | Requested percent, before the 1,500 mA power limiter |
 | `trafficSpeed` | Auto-mode cycle speed, percent of normal (40-250) |
 | `effectSpeed` | Effects-mode animation speed, percent of normal (40-250) |
-| `network` | `hotspot` or `station` (home Wi-Fi mode) |
+| `network` | `hotspot`, `station` (home Wi-Fi mode), or `off` (only seen in the moment before it turns off) |
+| `homeWifi` | `true` if `src/secrets.h` sets up home Wi-Fi, so `station` can be chosen |
+| `flip` | OLED text rotated 180° |
 | `fw` | Firmware version |
 
 The page polls this endpoint every second, and immediately when the tab returns
@@ -65,12 +73,13 @@ connected phone.
 - **Auto:** green 5 s → yellow 2 s → red 5 s, repeating, scaled by
   `trafficSpeed`.
 - **Manual:** one chamber lit, chosen by the RED/YELLOW/GREEN buttons or the
-  page's lamps (which only respond in manual). Entering manual from the mode
+  page's lamps (which respond in auto and manual). Entering manual from the mode
   toggle shows the last chosen color. `POST /api/color` still switches to
   manual from any mode.
 - **Effects:** either holds one effect chosen from the page's dropdown, or
   (**Cycle all**, the default) rotates through the playlist in
-  `src/effects.cpp`, 15 s each (`EFFECT_STEP_MS`). Switching back to cycling
+  `src/effects.cpp`, 15 s each (`EFFECT_STEP_MS`). Effects with colors show
+  a picker per color on the page. Switching back to cycling
   gives the current effect a full 15 s before advancing. Animation runs at
   `effectSpeed`; the 15 s rotation is real time.
 
@@ -85,4 +94,7 @@ curl -d color=red http://192.168.4.1/api/color
 curl -d mode=effects http://192.168.4.1/api/mode
 curl -d effect=fire http://192.168.4.1/api/effect
 curl -d effect=cycle http://192.168.4.1/api/effect
+curl -d 'effect=radar&slot=0&color=ff00ff' http://192.168.4.1/api/effect/color
+curl -d flip=1 http://192.168.4.1/api/settings
+curl http://192.168.4.1/api/diag
 ```

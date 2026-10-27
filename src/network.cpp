@@ -8,12 +8,25 @@
 #include "config.h"
 #include "settings.h"
 
-static NetworkInfo g_info = {NetworkMode::Hotspot, false, false, false, -1, 0, "", "", ""};
+static NetworkInfo g_info = {NetworkMode::Off, false, false, false, -1, 0, "", "", ""};
 static portMUX_TYPE g_infoMux = portMUX_INITIALIZER_UNLOCKED;
-static volatile bool g_toggleRequested = false;
+static constexpr int8_t NO_REQUEST = -1;
+static volatile int8_t g_requested = NO_REQUEST;
+// Saved choice for when Wi-Fi is on; what an off -> on switch returns to.
+static volatile NetworkMode g_preferred = NetworkMode::Hotspot;
 static uint32_t g_noticeUntilMs = 0;
+static bool g_otaCallbacksSet = false;
 
-const char* networkModeName(NetworkMode mode) { return mode == NetworkMode::Station ? "station" : "hotspot"; }
+static const char* const MODE_NAMES[] = {"hotspot", "station", "off"};
+
+const char* networkModeName(NetworkMode mode) { return MODE_NAMES[(uint8_t)mode]; }
+
+bool parseNetworkMode(const char* text, NetworkMode& mode) {
+    for (uint8_t i = 0; i < sizeof(MODE_NAMES) / sizeof(MODE_NAMES[0]); ++i) {
+        if (strcmp(text, MODE_NAMES[i]) == 0) { mode = (NetworkMode)i; return true; }
+    }
+    return false;
+}
 
 NetworkInfo networkInfo() {
     portENTER_CRITICAL(&g_infoMux);
@@ -22,7 +35,17 @@ NetworkInfo networkInfo() {
     return info;
 }
 
-void networkRequestToggle() { g_toggleRequested = true; }
+void networkRequest(NetworkMode mode) { g_requested = (int8_t)mode; }
+
+NetworkMode networkToggleTarget() {
+    const NetworkMode mode = networkInfo().mode;
+    if (mode == NetworkMode::Off) return g_preferred;
+    return mode == NetworkMode::Station ? NetworkMode::Hotspot : NetworkMode::Station;
+}
+
+void networkRequestToggle() { networkRequest(networkToggleTarget()); }
+
+void networkRequestOnOff() { networkRequest(networkInfo().mode == NetworkMode::Off ? g_preferred : NetworkMode::Off); }
 
 static void copyText(char* out, size_t size, const char* text) {
     strncpy(out, text, size - 1);
@@ -46,14 +69,18 @@ static void setOtaPercent(int8_t percent) {
     portEXIT_CRITICAL(&g_infoMux);
 }
 
-static bool homeWifiConfigured() { return HOME_WIFI_SSID[0] != '\0'; }
+bool networkHomeConfigured() { return HOME_WIFI_SSID[0] != '\0'; }
 
 static NetworkMode loadPreference() {
     const uint8_t value = settingsGet(SETTING_NETWORK, (uint8_t)NetworkMode::Hotspot);
     return value == (uint8_t)NetworkMode::Station ? NetworkMode::Station : NetworkMode::Hotspot;
 }
 
-static bool savePreference(NetworkMode mode) { return settingsSet(SETTING_NETWORK, (uint8_t)mode); }
+static bool savePreference(NetworkMode mode) {
+    if (mode == NetworkMode::Off) return settingsSet(SETTING_WIFI_ON, 0);
+    g_preferred = mode;
+    return settingsSet(SETTING_WIFI_ON, 1) && settingsSet(SETTING_NETWORK, (uint8_t)mode);
+}
 
 // Without a router option in DHCP, phones treat the costume network as
 // local-only and keep using cellular data for the internet.
@@ -90,6 +117,14 @@ static void startHotspot() {
 
 // No password: OTA is only reachable on the home network, and only in home Wi-Fi mode.
 static void startOta() {
+    if (g_otaCallbacksSet) {
+        ArduinoOTA.begin();
+        portENTER_CRITICAL(&g_infoMux);
+        g_info.otaEnabled = true;
+        portEXIT_CRITICAL(&g_infoMux);
+        return;
+    }
+    g_otaCallbacksSet = true;
     ArduinoOTA.setHostname(OTA_HOSTNAME);
     ArduinoOTA.onStart([] { setOtaPercent(0); });
     ArduinoOTA.onProgress([](unsigned int done, unsigned int total) { setOtaPercent((int8_t)(total == 0 ? 0 : done * 100 / total)); });
@@ -117,11 +152,11 @@ static bool startStation() {
     copyText(g_info.ssid, sizeof(g_info.ssid), HOME_WIFI_SSID);
     portEXIT_CRITICAL(&g_infoMux);
     setNotice("joining home Wi-Fi...", 0);
+    WiFi.setHostname(OTA_HOSTNAME);
     WiFi.mode(WIFI_STA);
     // Modem sleep drops the ESP32 to ~30-60 mA average, low enough that USB battery
     // banks cut the port after a minute or two; it also adds 1-2 s of request latency.
     WiFi.setSleep(false);
-    WiFi.setHostname(OTA_HOSTNAME);
     WiFi.begin(HOME_WIFI_SSID, HOME_WIFI_PASSWORD);
     const uint32_t startedMs = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startedMs < STATION_CONNECT_TIMEOUT_MS) vTaskDelay(pdMS_TO_TICKS(100));
@@ -145,47 +180,72 @@ static bool startStation() {
     return true;
 }
 
-void networkStart() {
-    if (loadPreference() == NetworkMode::Station) {
-        if (!homeWifiConfigured()) {
-            startHotspot();
-            setNotice("no HOME_WIFI in secrets.h", 10000);
-        } else if (!startStation()) {
-            startHotspot();
-            setNotice("home Wi-Fi not found", 10000);
-        }
-        return;
-    }
-    startHotspot();
+// Tears down whatever is running: OTA (and with it mDNS), then the radio.
+static void stopNetwork() {
+    if (networkInfo().otaEnabled) ArduinoOTA.end();
+    WiFi.mode(WIFI_OFF);
+    portENTER_CRITICAL(&g_infoMux);
+    g_info.mode = NetworkMode::Off;
+    g_info.otaEnabled = false;
+    g_info.failed = false;
+    g_info.clients = 0;
+    g_info.ssid[0] = '\0';
+    g_info.address[0] = '\0';
+    portEXIT_CRITICAL(&g_infoMux);
 }
 
-// Saves the other mode and restarts; the pause lets the OLED show where it is going.
-static void toggleMode() {
-    const NetworkMode next = networkInfo().mode == NetworkMode::Station ? NetworkMode::Hotspot : NetworkMode::Station;
-    if (next == NetworkMode::Station && !homeWifiConfigured()) {
+static void applyMode(NetworkMode mode) {
+    stopNetwork();
+    if (mode == NetworkMode::Off) {
+        setNotice("", 0);
+#if SERIAL_DEBUG
+        Serial.println("Wi-Fi off");
+#endif
+    } else if (mode == NetworkMode::Hotspot) {
+        startHotspot();
+        setNotice("", 0);
+    } else if (!networkHomeConfigured()) {
+        startHotspot();
+        setNotice("no HOME_WIFI in secrets.h", 10000);
+    } else if (!startStation()) {
+        startHotspot();
+        setNotice("home Wi-Fi not found", 10000);
+    }
+}
+
+void networkStart() {
+    g_preferred = loadPreference();
+    applyMode(settingsGet(SETTING_WIFI_ON, 1) != 0 ? g_preferred : NetworkMode::Off);
+}
+
+// Saves the choice, then switches in place; the pause lets the web reply go out
+// and the OLED show where it is going. Returns true if the network changed.
+static bool switchTo(NetworkMode target) {
+    if (target == NetworkMode::Station && !networkHomeConfigured()) {
         setNotice("no HOME_WIFI in secrets.h", NETWORK_NOTICE_MS);
-        return;
+        return false;
     }
-    if (!savePreference(next)) {
-        setNotice("could not save mode", NETWORK_NOTICE_MS);
-        return;
-    }
-    setNotice(next == NetworkMode::Station ? "restart: home Wi-Fi" : "restart: hotspot", 0);
-    vTaskDelay(pdMS_TO_TICKS(1500));
-    ESP.restart();
+    if (!savePreference(target)) setNotice("could not save Wi-Fi mode", NETWORK_NOTICE_MS);
+    if (target == networkInfo().mode) return false;
+    static const char* const NOTICES[] = {"starting hotspot...", "joining home Wi-Fi...", "turning Wi-Fi off..."};
+    setNotice(NOTICES[(uint8_t)target], 0);
+    vTaskDelay(pdMS_TO_TICKS(NETWORK_SWITCH_DELAY_MS));
+    applyMode(target);
+    return true;
 }
 
 // Hotspot: slow blink while waiting for a phone, solid once one joins.
-// Station: solid while connected, fast blink while not.
+// Station: solid while connected, fast blink while not. Off: dark.
 static void updateStatusLed(const NetworkInfo& info) {
     const uint32_t now = millis();
     bool on;
-    if (info.mode == NetworkMode::Station) on = WiFi.status() == WL_CONNECTED || (now / 100) % 2 == 0;
+    if (info.mode == NetworkMode::Off) on = false;
+    else if (info.mode == NetworkMode::Station) on = WiFi.status() == WL_CONNECTED || (now / 100) % 2 == 0;
     else on = info.clients > 0 || (now / 500) % 2 == 0;
     digitalWrite(PIN_STATUS_LED, on ? HIGH : LOW);
 }
 
-void networkLoop() {
+bool networkLoop() {
     const NetworkInfo info = networkInfo();
     if (info.otaEnabled) ArduinoOTA.handle();
     if (info.mode == NetworkMode::Hotspot) {
@@ -195,9 +255,9 @@ void networkLoop() {
         portEXIT_CRITICAL(&g_infoMux);
     }
     if (g_noticeUntilMs != 0 && (int32_t)(millis() - g_noticeUntilMs) >= 0) setNotice("", 0);
-    if (g_toggleRequested) {
-        g_toggleRequested = false;
-        toggleMode();
-    }
     updateStatusLed(info);
+    const int8_t requested = g_requested;
+    if (requested == NO_REQUEST) return false;
+    g_requested = NO_REQUEST;
+    return switchTo((NetworkMode)requested);
 }

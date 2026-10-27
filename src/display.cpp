@@ -8,16 +8,20 @@
 #include "config.h"
 #include "control.h"
 #include "network.h"
+#include "settings.h"
 
 // Passing the pins makes U8g2 call Wire.begin(SDA, SCL); without them it would
 // claim GPIO21/22, which are the YELLOW and GREEN buttons.
 static U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C g_oled(U8G2_R0, U8X8_PIN_NONE, PIN_OLED_SCL, PIN_OLED_SDA);
 
-static const char* const HINTS_AUTO[] = {"G faster R slower Y 1x"};
+static const char* const HINTS_AUTO[] = {"tap R/Y/G: light a color", "hold G faster R slower", "hold Y: normal speed"};
 static const char* const HINTS_MANUAL[] = {"R / Y / G: light a color"};
 static const char* const HINTS_EFFECTS[] = {"tap G next  R previous", "hold G faster R slower", "Y: normal speed"};
 static const char* const HINT_MODE = "MODE tap next, hold auto";
 static constexpr uint8_t NETWORK_PAGES = 2;
+static constexpr uint8_t CHORD_PAGES = 2;
+
+static volatile bool g_flipped = false;
 
 struct Screen {
     char title[20];
@@ -43,25 +47,39 @@ static void formatSpeed(char* out, size_t size, uint8_t level) {
     snprintf(out, size, "%u.%02ux", percent / 100, percent % 100);
 }
 
+void displaySetFlipped(bool flipped) {
+    g_flipped = flipped;
+    settingsSet(SETTING_FLIP_DISPLAY, flipped ? 1 : 0);
+}
+
+bool displayFlipped() { return g_flipped; }
+
+static void formatNetworkPage(char* out, size_t size, uint8_t page, const NetworkInfo& net) {
+    const bool station = net.mode == NetworkMode::Station;
+    if (net.mode == NetworkMode::Off) snprintf(out, size, "Wi-Fi is off");
+    else if (page == 0 && station) snprintf(out, size, "home %s", net.ssid);
+    else if (page == 0) snprintf(out, size, "%s / %s", net.ssid, WIFI_AP_PASSWORD);
+    else if (station) snprintf(out, size, "%s OTA %s", net.address, net.otaEnabled ? "on" : "off");
+    else snprintf(out, size, "%s  %u phone%s", net.address, net.clients, net.clients == 1 ? "" : "s");
+}
+
 // The bottom line: a notice if there is one, otherwise rotating pages of button
-// hints for the mode, then how to reach the costume on the current network.
+// hints for the mode, the Wi-Fi chords, then how to reach the costume.
 static void formatHint(char* out, size_t size, Mode mode, const NetworkInfo& net, uint32_t now) {
     if (net.failed) { snprintf(out, size, "WI-FI FAILED: restart"); return; }
     if (net.notice[0] != '\0') { snprintf(out, size, "%s", net.notice); return; }
     const char* const* hints = HINTS_AUTO;
-    uint8_t hintCount = 1;
-    if (mode == Mode::Manual) hints = HINTS_MANUAL;
+    uint8_t hintCount = sizeof(HINTS_AUTO) / sizeof(HINTS_AUTO[0]);
+    if (mode == Mode::Manual) { hints = HINTS_MANUAL; hintCount = 1; }
     else if (mode == Mode::Effects) { hints = HINTS_EFFECTS; hintCount = sizeof(HINTS_EFFECTS) / sizeof(HINTS_EFFECTS[0]); }
-    const uint8_t pageCount = hintCount + 2 + NETWORK_PAGES;
+    const uint8_t pageCount = hintCount + 1 + CHORD_PAGES + NETWORK_PAGES;
     const uint8_t page = (uint8_t)((now / DISPLAY_HINT_MS) % pageCount);
-    const bool station = net.mode == NetworkMode::Station;
+    const bool off = net.mode == NetworkMode::Off;
     if (page < hintCount) snprintf(out, size, "%s", hints[page]);
     else if (page == hintCount) snprintf(out, size, "%s", HINT_MODE);
-    else if (page == hintCount + 1) snprintf(out, size, "hold MODE+G: %s", station ? "hotspot" : "home WiFi");
-    else if (page == hintCount + 2 && station) snprintf(out, size, "home %s", net.ssid);
-    else if (page == hintCount + 2) snprintf(out, size, "%s / %s", net.ssid, WIFI_AP_PASSWORD);
-    else if (station) snprintf(out, size, "%s OTA %s", net.address, net.otaEnabled ? "on" : "off");
-    else snprintf(out, size, "%s  %u phone%s", net.address, net.clients, net.clients == 1 ? "" : "s");
+    else if (page == hintCount + 1 && !off) snprintf(out, size, "hold MODE+G: %s", networkToggleTarget() == NetworkMode::Station ? "home WiFi" : "hotspot");
+    else if (page <= hintCount + CHORD_PAGES) snprintf(out, size, "hold MODE+R: WiFi %s", off ? "on" : "off");
+    else formatNetworkPage(out, size, (uint8_t)(page - hintCount - 1 - CHORD_PAGES), net);
 }
 
 static void composeScreen(Screen& screen, const Status& status, const NetworkInfo& net, uint32_t now) {
@@ -123,6 +141,7 @@ static void drawScreen(const Screen& screen) {
 static void displayTask(void*) {
     Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL, OLED_I2C_CLOCK_HZ);
     bool ready = false;
+    bool flipped = false;
     Screen shown = {};
     Screen screen = {};
     uint8_t contrast = DISPLAY_CONTRAST_FULL;
@@ -140,6 +159,8 @@ static void displayTask(void*) {
         if (!ready) {
             g_oled.setBusClock(OLED_I2C_CLOCK_HZ);
             g_oled.begin();
+            g_oled.setDisplayRotation(g_flipped ? U8G2_R2 : U8G2_R0);
+            flipped = g_flipped;
             ready = true;
             memset(&shown, 0, sizeof(shown));
             contrast = 0;
@@ -147,6 +168,12 @@ static void displayTask(void*) {
 #if SERIAL_DEBUG
             Serial.printf("OLED found at 0x%02X\n", OLED_I2C_ADDRESS);
 #endif
+        }
+        if (flipped != g_flipped) {
+            flipped = g_flipped;
+            g_oled.setDisplayRotation(flipped ? U8G2_R2 : U8G2_R0);
+            memset(&shown, 0, sizeof(shown));  // Forces a redraw the new way up.
+            lastChangeMs = now;
         }
         composeScreen(screen, controlSnapshot(), networkInfo(), now);
         // Hint rotation alone does not count as activity, so the screen still dims.
@@ -168,5 +195,6 @@ static void displayTask(void*) {
 }
 
 void displayBegin() {
+    g_flipped = settingsGet(SETTING_FLIP_DISPLAY, 0) != 0;
     xTaskCreatePinnedToCore(displayTask, "display", DISPLAY_TASK_STACK_BYTES, nullptr, 1, nullptr, WEB_TASK_CORE);
 }

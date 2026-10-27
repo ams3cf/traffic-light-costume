@@ -11,3 +11,7 @@
 #pragma once
 
 void displayBegin();
+// Rotates the text 180 degrees, e.g. to read it from inside the costume. Saved;
+// safe from any task, and applied on the next refresh.
+void displaySetFlipped(bool flipped);
+bool displayFlipped();

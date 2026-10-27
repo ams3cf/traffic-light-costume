@@ -15,6 +15,8 @@ struct Status {
     LightState state;
     Color lit;               // Chamber currently lit; None while an effect runs.
     const char* effectName;  // Points at a static string; safe to read on any core.
+    uint8_t colorCount;      // How many colors the current effect takes.
+    uint32_t colors[3];      // The current effect's colors, 0xRRGGBB.
 };
 
 void controlBegin();

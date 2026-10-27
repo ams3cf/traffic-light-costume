@@ -54,6 +54,14 @@
 #define LED_OFFSET_MIDDLE    (LED_OFFSET_BOTTOM + LED_COUNT_PER_SECTION)
 #define LED_OFFSET_TOP       (LED_OFFSET_MIDDLE + LED_COUNT_PER_SECTION)
 
+// Each section is a ring of LEDs inside its lamp. Ring-aware effects (radar,
+// scanner, fire, ...) need to know where each ring starts, seen from the front:
+// RING_TOP_LED is the LED (0-based within its section) at 12 o'clock, and
+// RING_CLOCKWISE is the direction the chain runs. Unverified defaults; if the
+// radar beam does not line up across the three lamps, adjust these.
+static const uint8_t RING_TOP_LED[3] = {0, 0, 0};    // bottom, middle, top
+static const bool RING_CLOCKWISE[3] = {true, true, true};
+
 // ---------------------------------------------------------------------------
 // LED safety, timing, and firmware identity
 // ---------------------------------------------------------------------------
@@ -66,8 +74,15 @@
 #define BUTTON_REPEAT_MS 400
 // Hold MODE + GREEN this long to switch between hotspot and home Wi-Fi.
 #define BUTTON_CHORD_MS 3000
+// Button diagnostics (GET /api/diag): pin-change interrupts count every raw edge.
+// A button with more edges than this in one frame is noise, not a finger; its
+// interrupt is switched off so it cannot starve the lights core.
+#define BUTTON_EDGE_STORM_PER_FRAME 200
+// Light state (mode, color, effect, speeds, effect colors) is saved this long
+// after the last change, so a burst of presses costs one flash write.
+#define STATE_SAVE_DELAY_MS 2000
 #define COMMAND_QUEUE_LENGTH 8
-#define FIRMWARE_VERSION "2.1.1"
+#define FIRMWARE_VERSION "2.2.1"
 
 // ---------------------------------------------------------------------------
 // Wi-Fi access point and web UI
@@ -99,10 +114,12 @@
 #define WEB_TASK_CORE 0
 #define WEB_TASK_STACK_BYTES 8192
 // Home Wi-Fi mode: hostname for mDNS (OTA_HOSTNAME.local) and OTA, and how long to
-// try joining before falling back to the hotspot for that boot.
+// try joining before falling back to the hotspot.
 #define OTA_HOSTNAME "trafficlight"
 #define STATION_CONNECT_TIMEOUT_MS 15000
 #define NETWORK_NOTICE_MS 5000
+// Pause before switching network mode, so the web reply and the OLED notice get out.
+#define NETWORK_SWITCH_DELAY_MS 500
 
 // ---------------------------------------------------------------------------
 // OLED status display (runs in its own task on WEB_TASK_CORE)

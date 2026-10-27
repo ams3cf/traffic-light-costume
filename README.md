@@ -10,23 +10,31 @@ Parts, pin map, wiring, and dimensions: [docs/HARDWARE.md](docs/HARDWARE.md).
 
 > **Status:** LED output, the Wi-Fi hotspot, the web API, the button wiring,
 > the OLED, home Wi-Fi mode, and OTA updates are verified on the bench (3-pixel
-> chain). Per-mode button behavior, hotspot fallback, the 87-pixel chain, and
-> current draw still need validation. Do not describe those as field-tested.
+> chain); OTA of the production build into the costume is verified. Per-mode
+> button behavior, hotspot fallback, in-place network switching, the look of
+> the ring effects on the 87-pixel chain, and current draw still need
+> validation. Do not describe those as field-tested.
 
 ---
 
 ## Features
 
 - Three modes: **Auto** (traffic cycle), **Manual** (one chamber, chosen by
-  buttons or phone), **Effects** (pick one of 13 effects from a
-  dropdown, or cycle through them all, 15 s each).
+  buttons or phone), **Effects** (pick one of 27 effects from a
+  dropdown, or cycle through them all, 15 s each). Many effects use the
+  lamps' ring shape (radar, helix, scanner, ring fire, ...), and effects with
+  colors get color pickers on the page.
+- Mode, color, effect, speeds, effect colors, and brightness are saved, so the
+  costume powers up showing what it showed when it was switched off.
 - WPA2 access point `TrafficLight` with a one-page control UI and a JSON status
   API, so button presses show up on every connected phone.
 - Lights and web server on separate cores; they share only a command queue and a
   status snapshot, so web traffic cannot stall animation.
 - Four normally-closed buttons on a common ground: mode, red, yellow, and green.
 - 0.91" OLED showing mode, speed, brightness, button hints, and Wi-Fi details.
-- Home Wi-Fi mode (hold MODE + GREEN for 3 s) with OTA firmware updates; falls back to the hotspot if home Wi-Fi is out of range.
+- Home Wi-Fi mode (hold MODE + GREEN for 3 s) with OTA firmware updates; falls back to the hotspot if home Wi-Fi is out of range. Wi-Fi can also be turned off (hold MODE + RED for 3 s). Switching needs no restart.
+- OLED text can be flipped to read from inside the costume (page Settings).
+- Button diagnostics at `/api/diag`: interrupt edge counts and logs next to the debounced gestures.
 - Global 1,500 mA FastLED power limiter.
 
 ## Repository layout
@@ -42,7 +50,9 @@ traffic-light-costume/
 │   ├── state.{h,cpp}    # modes and commands (pure C++, unit-tested)
 │   ├── control.{h,cpp}  # command queue + status snapshot between cores
 │   ├── lights.{h,cpp}   # core 1: modes, timing, FastLED output
-│   ├── effects.{h,cpp}  # effects-mode playlist
+│   ├── effects.{h,cpp}  # effects-mode playlist and per-effect colors
+│   ├── effects_*.cpp    # the effect renderers (classic, motion, fields)
+│   ├── rings.{h,cpp}    # ring geometry: where each LED sits on the costume
 │   ├── buttons.{h,cpp}  # reads the buttons, dispatches gestures
 │   ├── gestures.{h,cpp} # debounce, tap/hold, MODE chords (pure C++, unit-tested)
 │   ├── network.{h,cpp}  # hotspot / home Wi-Fi mode, OTA
@@ -68,6 +78,7 @@ Everything tunable is in [`src/config.h`](src/config.h):
 | `PIN_OLED_SDA` / `PIN_OLED_SCL` | `32` / `33` | OLED status display (I2C) |
 | `BUTTON_PRESSED_LEVEL` | `HIGH` | Pin level while pressed (`HIGH` = normally-closed, `LOW` = normally-open) |
 | `LED_COUNT_PER_SECTION` | `29` (bench: `1`) | LEDs per section |
+| `RING_TOP_LED` / `RING_CLOCKWISE` | `{0,0,0}` / all `true` | Per ring: which LED sits at 12 o'clock and which way the chain runs, seen from the front (unverified; see [Ring alignment](#ring-alignment)) |
 | `LED_CURRENT_BUDGET_MA` | `1500` | Global FastLED current limit |
 | `DEFAULT_BRIGHTNESS_PERCENT` | `31` | Brightness until one is set; after that the saved value is used |
 | `EFFECT_STEP_MS` | `15000` | Time per effect in Effects mode |
@@ -162,8 +173,8 @@ drove the same wiring correctly.
 2. On the phone, join Wi-Fi `TrafficLight` (password `greenlight`) and open
    `http://192.168.4.1`. Bookmark it or add it to the home screen.
 3. Use the Auto / Manual / Effects toggle and the brightness slider. In
-   Manual, tap a lamp to light that chamber (lamps are inactive in the other
-   modes, where the hardware color buttons adjust speed). In Effects, the
+   Auto or Manual, tap a lamp to light that chamber (this switches to Manual;
+   lamps are inactive in Effects). In Effects, the
    dropdown picks one effect to hold or **Cycle all**. The current speed is
    shown under the toggle. Brightness is saved on the board, so it also
    applies to the next power-up, including the boot self-test.
@@ -180,16 +191,21 @@ data while joined. That behavior is confirmed on Linux but not yet on a phone.
 
   | Mode | GREEN | RED | YELLOW |
   |---|---|---|---|
-  | Auto | Faster cycle (press or hold) | Slower cycle (press or hold) | Normal speed |
+  | Auto | Tap: light green (switches to Manual). Hold: faster cycle | Tap: light red (switches to Manual). Hold: slower cycle | Tap: light yellow (switches to Manual). Hold: normal speed |
   | Manual | Light green | Light red | Light yellow |
   | Effects | Tap: next effect. Hold: faster animation | Tap: previous effect. Hold: slower animation | Normal speed |
 
 - Speeds run from 0.4× to 2.5× in seven steps; Auto and Effects keep separate
   speeds. Entering Manual from MODE shows the last chosen color.
+- In Auto, a color button lights its color on release, unless it was held.
+  Speed changes need a one-second hold, so a long press on RED can no longer
+  silently slow the cycle to 0.4× (green for 12.5 s), which looked like the
+  light had frozen.
 - Buttons are normally-closed to ground with internal pull-ups: a pin rests
   LOW and reads HIGH while pressed. 40 ms debounce.
-- MODE works as a shift key: hold MODE + GREEN for 3 s to switch network
-  mode (see below). While MODE is held, other buttons do nothing else.
+- MODE works as a shift key: hold MODE + GREEN for 3 s to switch between
+  hotspot and home Wi-Fi, or MODE + RED for 3 s to turn Wi-Fi off or back on
+  (see below). While MODE is held, other buttons do nothing else.
 - Each pin's level at boot counts as "released". An unplugged or broken button
   reads as permanently pressed, so it is ignored (serial logs
   `button <name> reads pressed at boot`) rather than firing. A button held
@@ -238,17 +254,20 @@ ESP32's Wi-Fi (~150 mA) and the LEDs (up to 1,500 mA).
   Rotating hints alone do not keep it bright.
 - If the access point fails to start, the bottom line reads
   `WI-FI FAILED: restart`.
+- **Flip screen** in the page's Settings section rotates the text 180°, to
+  read it from inside the costume instead of outside. The choice is saved.
 - The onboard GPIO2 LED still blinks while waiting for a phone and stays on
   once one has joined (bench indicator).
 
 ### Home Wi-Fi mode and OTA updates
 
-The costume has two network modes:
+The costume has three network modes:
 
 | Mode | When | Reach the page at | OTA |
 |---|---|---|---|
 | **Hotspot** (default) | Out and about | Join `TrafficLight`, open `http://192.168.4.1` | Off |
 | **Home Wi-Fi** | At home, for updates | `http://trafficlight.local` or the IP on the OLED | On |
+| **Off** | Radio not wanted | Not reachable; buttons and OLED only | Off |
 
 **Setup (once).** Copy the template and fill in your home network.
 `src/secrets.h` is git-ignored; never commit it.
@@ -260,15 +279,21 @@ pio run -e production -t upload   # one USB flash so the costume knows them
 ```
 
 **Switching.** Hold **MODE + GREEN for 3 s** (press MODE first or both
-together). The OLED shows `restart: home Wi-Fi` (or `restart: hotspot`) and
-the board restarts into the other mode, about 2 s with the lights blank. The
-choice is saved, so it survives restarts and OTA updates. While MODE is held,
-the color buttons do nothing else, so the chord never changes speed or color.
+together) to switch between hotspot and home Wi-Fi, or **MODE + RED for 3 s**
+to turn Wi-Fi off, and again to turn it back on in the last mode. The
+page's Settings section has the same three choices. The switch happens in
+place: the lights keep running and the board does not restart. The OLED shows
+`starting hotspot...`, `joining home Wi-Fi...`, or `turning Wi-Fi off...`.
+The choice is saved, so it survives restarts and OTA updates. While MODE is
+held, the color buttons do nothing else, so the chord never changes speed or
+color. With Wi-Fi off, the OLED's last hint reads `Wi-Fi is off` and the
+onboard LED stays dark.
 
 If home Wi-Fi cannot be joined within 15 s (out of range, router down), the
-hotspot starts for that boot and the OLED shows `home Wi-Fi not found`. The
-saved choice stays home Wi-Fi, so the next boot tries again; use the chord to
-switch back to hotspot permanently. The lights run normally the whole time.
+hotspot starts instead and the OLED shows `home Wi-Fi not found`. The saved
+choice stays home Wi-Fi, so the next boot tries again; the MODE + GREEN chord
+retries home Wi-Fi right away. Choose Hotspot on the page to make the hotspot
+the saved choice. The lights run normally the whole time.
 
 **Uploading over the air.** In home Wi-Fi mode:
 
@@ -294,6 +319,39 @@ from device`, and the OLED shows `OTA failed: can't reach PC`. With `ufw`
 sudo ufw allow proto tcp from 10.1.0.0/22 to any port 40100 comment 'traffic light OTA'
 ```
 
+### Ring alignment
+
+Each 29-LED section is a ring inside its lamp. Ring effects (radar, helix,
+scanner, police, fire, equalizer, ...) place every LED by its clock position,
+using `RING_TOP_LED` and `RING_CLOCKWISE` in `src/config.h`. To check them,
+run **radar**: the beam should sweep clockwise and point the same way in all
+three lamps. If a lamp's beam leads or lags, change that ring's
+`RING_TOP_LED` to the LED that sits at 12 o'clock. If it turns the wrong way,
+set its `RING_CLOCKWISE` to `false`.
+
+### Button diagnostics
+
+`GET /api/diag` reports, per button, what a pin-change interrupt saw next to
+what the debouncer accepted. `POST /api/diag/reset` zeroes the counters.
+
+| Field | Meaning |
+|---|---|
+| `edges` | Raw level changes caught by the interrupt (two per clean press) |
+| `shortestEdgeUs` | Shortest gap between two edges: bounce shows as µs, not ms |
+| `sampledChanges` | Changes seen by the per-frame (25 ms) sampling, before the 40 ms debounce |
+| `presses` / `taps` / `holds` / `chords` | Gestures the firmware acted on |
+| `maxPollGapMs` | Longest gap between samples; much over 25 ms means the lights core stalled |
+| `pollCore` / `interruptCore` | CPU core of the sampling and the interrupt (both 1; Wi-Fi is on 0) |
+| `edges` (log) | Last 96 raw edges: `[micros, button, pressed]` |
+| `events` (log) | Last 32 gestures: `[micros, button, kind]`, same clock as the edges |
+
+How to read it: many more edges than 2 × presses means bounce or noise. Edges
+with no matching press means a tap too short for the debouncer. A press with
+no matching edges points at the sampling, not the wiring. Gestures still come
+from the per-frame sampling; the interrupt only observes. If one button
+floods the interrupt (over `BUTTON_EDGE_STORM_PER_FRAME` edges in one frame),
+its counting is switched off and listed under `edgeCountingOff` until reset.
+
 ### Why not Bluetooth
 
 BLE was removed in favor of Wi-Fi. On this board, connections failed or took
@@ -314,7 +372,7 @@ Verified on the bench (ESP-WROOM-32 DevKit, 3-pixel chain on GPIO16):
   3 KB; status polls take about 30 ms.
 - Two-minute soak in Effects mode: 492/492 polls succeeded, no reboot, all 13
   effects cycled.
-- `pio test -e native`: 29/29 tests pass (state and gestures).
+- `pio test -e native`: 33/33 tests pass (state and gestures).
 - OLED found at 0x3C and showing all three lines (user confirmed).
 - Hotspot boot with the network-mode code: no saved preference, starts the
   hotspot, no NVS errors.
@@ -326,6 +384,11 @@ Verified on the bench (ESP-WROOM-32 DevKit, 3-pixel chain on GPIO16):
   Wi-Fi within 2 s. Requires the `ufw` rule for port 40100.
 - Effects dropdown: a picked effect holds past the 15 s rotation; Cycle all
   resumes from it.
+- OTA of fw 2.2.0 (`production_ota`, 902 KB) into the costume: `Result: OK`,
+  rejoined home Wi-Fi; `/api/diag` showed sampling on core 1, interrupts
+  attached, no stalls (longest sample gap 26 ms), and no edges at rest.
+- After the fw 2.2.1 OTA restart, the costume came back in Manual on the last
+  chosen color with the flipped screen, as saved.
 
 Still pending; do not claim validated until performed:
 
@@ -337,8 +400,12 @@ Still pending; do not claim validated until performed:
 - OLED dimming after 30 s and hot-plug on the real module.
 - Home Wi-Fi mode: chord back to hotspot, and fallback to the hotspot when
   home Wi-Fi is out of range.
-- OTA of the `production` build into the costume.
-- Effects as they actually look on the 87-pixel chain inside the chambers.
+- Effects as they look in the costume, and the ring alignment defaults
+  (`RING_TOP_LED`, `RING_CLOCKWISE`).
+- Switching hotspot / home / off in place (no restart), from the chords and
+  from the page; Wi-Fi back on with MODE + RED.
+- Light state restored after a power cycle (state is saved 2 s after the
+  last change). Restore after a software restart is verified (below).
 - Measure supply current and verify the 1,500 mA software limit under load;
   choose the proposed fuse from the actual wiring and supply.
 - Confirm GPIO2 status LED polarity on this carrier board.
